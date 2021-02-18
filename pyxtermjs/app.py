@@ -1,27 +1,51 @@
 #!/usr/bin/env python3
 import argparse
+import fcntl # File Descriptor Control https://en.wikipedia.org/wiki/File_descriptor
+
+import os
+import pty
+import select
+import shlex # Simple lexical analysis
+import struct
+import subprocess
+import termios # Interface to the POSIX calls for tty I/O control
+from logging.config import dictConfig
 from flask import Flask, render_template
 from flask_socketio import SocketIO
-import pty
-import os
-import subprocess
-import select
-import termios
-import struct
-import fcntl
-import shlex
-
 
 __version__ = "0.4.0.2"
+
+dictConfig({
+    'version': 1,
+    'formatters': {'default': {
+        'format': '[%(asctime)s] %(levelname)s in %(module)s: %(message)s',
+    }},
+    'handlers': {'wsgi': {
+        'class': 'logging.StreamHandler',
+        'stream': 'ext://flask.logging.wsgi_errors_stream',
+        'formatter': 'default'
+    }},
+    'root': {
+        'level': 'INFO',
+        'handlers': ['wsgi']
+    }
+})
 
 app = Flask(__name__, template_folder=".", static_folder=".", static_url_path="")
 app.config["SECRET_KEY"] = "secret!"
 app.config["fd"] = None
 app.config["child_pid"] = None
-socketio = SocketIO(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
-
+# https://www.programcreek.com/python/example/8915/termios.TIOCSWINSZ
 def set_winsize(fd, row, col, xpix=0, ypix=0):
+    """
+    This sets the terminal window size of the child tty. This will cause
+    a SIGWINCH signal to be sent to the child. This does not change the
+    physical window size. It changes the size reported to TTY-aware
+    applications like vi or curses -- applications that respond to the
+    SIGWINCH signal.
+    """
     winsize = struct.pack("HHHH", row, col, xpix, ypix)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
 
@@ -73,6 +97,7 @@ def connect():
         # this is the child process fork.
         # anything printed here will show up in the pty, including the output
         # of this subprocess
+        app.logger.debug("Starting subprocess: {}".format(app.config["cmd"]))
         subprocess.run(app.config["cmd"])
     else:
         # this is the parent process fork.
@@ -81,21 +106,18 @@ def connect():
         app.config["child_pid"] = child_pid
         set_winsize(fd, 50, 50)
         cmd = " ".join(shlex.quote(c) for c in app.config["cmd"])
-        print("child pid is", child_pid)
-        print(
-            f"starting background task with command `{cmd}` to continously read "
-            "and forward pty output to client"
-        )
+        app.logger.info("Child PID {}".format(child_pid))
+        
+        app.logger.info(f"starting background task with command `{cmd}` to continously read "
+            "and forward pty output to client")
+
         socketio.start_background_task(target=read_and_forward_pty_output)
-        print("task started")
+        app.logger.info("Task started.")
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description=(
-            "A fully functional terminal in your browser. "
-            "https://github.com/cs01/pyxterm.js"
-        ),
+        description=("Go Pupper!"),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("-p", "--port", default=5000, help="port to run server on")
